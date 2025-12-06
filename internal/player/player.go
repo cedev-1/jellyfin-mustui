@@ -1,6 +1,8 @@
 package player
 
 import (
+	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -35,6 +37,7 @@ type Player struct {
 	queueIndex   int
 
 	streamer beep.StreamSeekCloser
+	httpBody io.Closer
 	ctrl     *beep.Ctrl
 	format   beep.Format
 	done     chan bool
@@ -45,15 +48,32 @@ type Player struct {
 	OnStateChange func(State)
 	OnTrackChange func(*Track)
 	OnProgress    func(time.Duration, time.Duration)
+
+	httpClient *http.Client
 }
 
 func New() *Player {
+	transport := &http.Transport{
+		MaxIdleConns:        10,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     90 * time.Second,
+		DisableCompression:  true,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+	}
+
 	return &Player{
 		state:      StateStopped,
 		queue:      make([]Track, 0),
 		queueIndex: -1,
 		done:       make(chan bool),
 		volume:     1.0,
+		httpClient: &http.Client{
+			Transport: transport,
+			Timeout:   0,
+		},
 	}
 }
 
@@ -69,7 +89,12 @@ func (p *Player) LoadTrack(track Track) error {
 		speaker.Clear()
 		p.streamer.Close()
 	}
-	resp, err := http.Get(track.URL)
+	if p.httpBody != nil {
+		p.httpBody.Close()
+		p.httpBody = nil
+	}
+
+	resp, err := p.httpClient.Get(track.URL)
 	if err != nil {
 		return err
 	}
@@ -81,6 +106,7 @@ func (p *Player) LoadTrack(track Track) error {
 	}
 
 	p.streamer = streamer
+	p.httpBody = resp.Body
 	p.format = format
 	p.currentTrack = &track
 	p.state = StateStopped
@@ -176,6 +202,10 @@ func (p *Player) Stop() {
 		p.streamer.Close()
 		p.streamer = nil
 	}
+	if p.httpBody != nil {
+		p.httpBody.Close()
+		p.httpBody = nil
+	}
 	p.ctrl = nil
 	p.state = StateStopped
 	p.position = 0
@@ -239,6 +269,12 @@ func (p *Player) GetCurrentTrack() *Track {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.currentTrack
+}
+
+func (p *Player) GetQueueIndex() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.queueIndex
 }
 
 func (p *Player) GetPosition() time.Duration {

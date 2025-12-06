@@ -55,6 +55,8 @@ type Model struct {
 	position     time.Duration
 	duration     time.Duration
 	isPlaying    bool
+	isLoading    bool
+	showHelp     bool
 	currentTrack *player.Track
 	progressBar  progress.Model
 
@@ -72,6 +74,11 @@ type stateChangedMsg player.State
 type artistsLoadedMsg []jellyfin.MusicItem
 type albumsLoadedMsg []jellyfin.MusicItem
 type tracksLoadedMsg []jellyfin.MusicItem
+type trackReadyMsg struct {
+	track      *player.Track
+	queueIndex int
+	err        error
+}
 type errMsg error
 
 func NewModel(cfg *config.Config, client *jellyfin.Client) Model {
@@ -88,6 +95,10 @@ func NewModel(cfg *config.Config, client *jellyfin.Client) Model {
 	m.trackList = list.New([]list.Item{}, musicDelegate{}, 0, 0)
 	m.artistList.Title = "Artists"
 	m.trackList.Title = "Tracks"
+
+	m.artistList.SetShowHelp(false)
+	m.trackList.SetShowHelp(false)
+	m.libraryList.SetShowHelp(false)
 
 	if cfg.Token != "" && cfg.ServerURL != "" && cfg.UserID != "" {
 		m.state = stateMusicPlayer
@@ -132,7 +143,7 @@ func NewModel(cfg *config.Config, client *jellyfin.Client) Model {
 		m.isPlaying = state == player.StatePlaying
 	}
 
-	m.progressBar = progress.New(progress.WithDefaultGradient())
+	m.progressBar = progress.New(progress.WithSolidFill(string(colorSubtext)))
 
 	return m
 }
@@ -181,6 +192,28 @@ func (m Model) loadTracks(albumID string) tea.Cmd {
 	}
 }
 
+func (m Model) playTrackAsync(index int) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+		switch index {
+		case -1:
+			err = m.player.Next()
+		case -2:
+			err = m.player.Previous()
+		default:
+			err = m.player.PlayFromQueue(index)
+		}
+		if err != nil {
+			return trackReadyMsg{track: nil, queueIndex: -1, err: err}
+		}
+		return trackReadyMsg{
+			track:      m.player.GetCurrentTrack(),
+			queueIndex: m.player.GetQueueIndex(),
+			err:        nil,
+		}
+	}
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -220,6 +253,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		progressModel, cmd := m.progressBar.Update(msg)
 		m.progressBar = progressModel.(progress.Model)
 		return m, cmd
+	case trackReadyMsg:
+		m.isLoading = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		m.currentTrack = msg.track
+		if msg.track != nil {
+			m.duration = msg.track.Duration
+		}
+		if msg.queueIndex >= 0 {
+			m.trackList.Select(msg.queueIndex)
+		}
+		m.isPlaying = true
+		m.err = nil
 	case errMsg:
 		m.err = msg
 	}
@@ -375,6 +423,7 @@ func (m Model) updateMusicPlayer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.artistList = list.New(items, musicDelegate{}, m.width/3, m.height-10)
 		m.artistList.Title = "Artists"
 		m.artistList.Styles.Title = listTitleStyle
+		m.artistList.SetShowHelp(false)
 
 	case albumsLoadedMsg:
 		m.albums = msg
@@ -398,6 +447,7 @@ func (m Model) updateMusicPlayer(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.trackList.Title = "Tracks"
 		}
 		m.trackList.Styles.Title = listTitleStyle
+		m.trackList.SetShowHelp(false)
 
 		queue := make([]player.Track, len(msg))
 		for i, t := range msg {
@@ -440,9 +490,11 @@ func (m Model) updateMusicPlayer(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.player.TogglePause()
 			m.isPlaying = m.player.GetState() == player.StatePlaying
 		case "n":
-			m.player.Next()
+			m.isLoading = true
+			return m, m.playTrackAsync(-1)
 		case "p":
-			m.player.Previous()
+			m.isLoading = true
+			return m, m.playTrackAsync(-2)
 		case "enter":
 			if m.panelFocus == focusArtists {
 				if item, ok := m.artistList.SelectedItem().(musicItem); ok {
@@ -452,17 +504,21 @@ func (m Model) updateMusicPlayer(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else {
 				if item, ok := m.trackList.SelectedItem().(trackItem); ok {
-					m.player.PlayFromQueue(item.queueIndex)
-					m.isPlaying = true
-					m.currentTrack = m.player.GetCurrentTrack()
-					if m.currentTrack != nil {
-						m.duration = m.currentTrack.Duration
-					}
+					m.isLoading = true
+					return m, m.playTrackAsync(item.queueIndex)
 				}
 			}
 		case "q":
 			m.player.Close()
 			return m, tea.Quit
+		case "?":
+			m.showHelp = !m.showHelp
+			return m, nil
+		case "esc":
+			if m.showHelp {
+				m.showHelp = false
+				return m, nil
+			}
 		}
 	}
 
@@ -521,23 +577,70 @@ func (m Model) viewMusicPlayer() string {
 	nowPlaying := m.renderNowPlaying()
 	nowPlayingCentered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, nowPlaying)
 
-	helpLines := []string{
-		"[Space] Play/Pause  [Enter] Select  [↑↓] Navigate  [Tab] Switch Panel",
-		"[H/←] Prev Album  [L/→] Next Album  [N] Next Track  [P] Prev Track  [Q] Quit",
+	var errorCentered string
+	if m.err != nil {
+		errorCentered = lipgloss.PlaceHorizontal(m.width, lipgloss.Center,
+			errorStyle.Render(fmt.Sprintf("Error: %v", m.err)))
 	}
-	help := helpStyle.Render(strings.Join(helpLines, "  │  "))
-	helpCentered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, help)
 
-	return lipgloss.JoinVertical(lipgloss.Center,
+	hint := helpStyle.Render("Press ? for help")
+	hintCentered := lipgloss.PlaceHorizontal(m.width, lipgloss.Center, hint)
+
+	elements := []string{
 		headerCentered,
 		"",
 		panelsCentered,
 		nowPlayingCentered,
-		helpCentered,
-	)
+	}
+	if errorCentered != "" {
+		elements = append(elements, errorCentered)
+	}
+	elements = append(elements, hintCentered)
+
+	view := lipgloss.JoinVertical(lipgloss.Center, elements...)
+
+	if m.showHelp {
+		helpContent := strings.Join([]string{
+			"─────────── Keybinds ───────────",
+			"",
+			"[Space]    Play / Pause",
+			"[Enter]    Select item",
+			"[↑/↓]      Navigate list",
+			"[Tab]      Switch panel",
+			"[H/←]      Previous album",
+			"[L/→]      Next album",
+			"[N]        Next track",
+			"[P]        Previous track",
+			"[Q]        Quit",
+			"[?]        Toggle help",
+			"[Esc]      Close help",
+			"",
+			"────────────────────────────────",
+		}, "\n")
+
+		modalStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorPrimary).
+			Padding(1, 3).
+			Background(colorBackground)
+
+		modal := modalStyle.Render(helpContent)
+		view = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
+	}
+
+	return view
 }
 
 func (m Model) renderNowPlaying() string {
+	if m.isLoading {
+		content := lipgloss.NewStyle().
+			Foreground(colorSecondary).
+			Bold(true).
+			Align(lipgloss.Center).
+			Render("⟳ Loading track...")
+		return nowPlayingStyle.Width(m.width - 10).Align(lipgloss.Center).Render(content)
+	}
+
 	if m.currentTrack == nil {
 		content := lipgloss.NewStyle().
 			Foreground(colorSubtext).
