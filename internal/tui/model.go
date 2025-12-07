@@ -65,12 +65,6 @@ type Model struct {
 }
 
 type tickMsg time.Time
-type progressMsg struct {
-	position time.Duration
-	duration time.Duration
-}
-type trackChangedMsg *player.Track
-type stateChangedMsg player.State
 type artistsLoadedMsg []jellyfin.MusicItem
 type albumsLoadedMsg []jellyfin.MusicItem
 type tracksLoadedMsg []jellyfin.MusicItem
@@ -93,8 +87,6 @@ func NewModel(cfg *config.Config, client *jellyfin.Client) Model {
 	m.libraryList = list.New([]list.Item{}, list.NewDefaultDelegate(), 0, 0)
 	m.artistList = list.New([]list.Item{}, musicDelegate{}, 0, 0)
 	m.trackList = list.New([]list.Item{}, musicDelegate{}, 0, 0)
-	m.artistList.Title = "Artists"
-	m.trackList.Title = "Tracks"
 
 	m.artistList.SetShowHelp(false)
 	m.trackList.SetShowHelp(false)
@@ -108,6 +100,7 @@ func NewModel(cfg *config.Config, client *jellyfin.Client) Model {
 		for i := range m.loginInputs {
 			t = textinput.New()
 			t.CharLimit = 64
+			t.Width = 50
 
 			switch i {
 			case 0:
@@ -117,6 +110,8 @@ func NewModel(cfg *config.Config, client *jellyfin.Client) Model {
 				t.TextStyle = inputFocusedStyle
 				if cfg.ServerURL != "" {
 					t.SetValue(cfg.ServerURL)
+				} else {
+					t.SetValue("https://")
 				}
 			case 1:
 				t.Placeholder = "Username"
@@ -358,9 +353,10 @@ func (m *Model) updateInputs(msg tea.Msg) tea.Cmd {
 func (m Model) viewLogin() string {
 	title := titleStyle.Render("JELLYFIN-MUSTUI")
 
+	labels := []string{"Server URL", "Username", "Password"}
 	inputs := make([]string, len(m.loginInputs))
 	for i := range m.loginInputs {
-		inputs[i] = m.loginInputs[i].View()
+		inputs[i] = labels[i] + " " + m.loginInputs[i].View()
 	}
 
 	btn := buttonStyle.Render("Login")
@@ -424,6 +420,8 @@ func (m Model) updateMusicPlayer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.artistList.Title = "Artists"
 		m.artistList.Styles.Title = listTitleStyle
 		m.artistList.SetShowHelp(false)
+		m.artistList.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(colorPrimary)
+		m.artistList.FilterInput.Cursor.Style = lipgloss.NewStyle().Foreground(colorPrimary)
 
 	case albumsLoadedMsg:
 		m.albums = msg
@@ -448,6 +446,8 @@ func (m Model) updateMusicPlayer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.trackList.Styles.Title = listTitleStyle
 		m.trackList.SetShowHelp(false)
+		m.trackList.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(colorPrimary)
+		m.trackList.FilterInput.Cursor.Style = lipgloss.NewStyle().Foreground(colorPrimary)
 
 		queue := make([]player.Track, len(msg))
 		for i, t := range msg {
@@ -463,6 +463,15 @@ func (m Model) updateMusicPlayer(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.player.SetQueue(queue)
 
 	case tea.KeyMsg:
+		if m.artistList.SettingFilter() || m.trackList.SettingFilter() {
+			var cmd tea.Cmd
+			if m.panelFocus == focusArtists {
+				m.artistList, cmd = m.artistList.Update(msg)
+			} else {
+				m.trackList, cmd = m.trackList.Update(msg)
+			}
+			return m, cmd
+		}
 		switch msg.String() {
 		case "tab":
 			if m.panelFocus == focusArtists {
@@ -509,6 +518,10 @@ func (m Model) updateMusicPlayer(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "q":
+			if m.showHelp {
+				m.showHelp = false
+				return m, nil
+			}
 			m.player.Close()
 			return m, tea.Quit
 		case "?":
@@ -547,7 +560,11 @@ func (m Model) viewMusicPlayer() string {
 		listHeight = 3
 	}
 	m.artistList.SetSize(artistWidth-2, listHeight)
+	m.artistList.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(colorPrimary)
+	m.artistList.FilterInput.Cursor.Style = lipgloss.NewStyle().Foreground(colorPrimary)
 	m.trackList.SetSize(trackWidth-2, listHeight)
+	m.trackList.FilterInput.PromptStyle = lipgloss.NewStyle().Foreground(colorPrimary)
+	m.trackList.FilterInput.Cursor.Style = lipgloss.NewStyle().Foreground(colorPrimary)
 
 	artistStyle := panelStyle.Width(artistWidth).Height(panelHeight)
 	if m.panelFocus == focusArtists {
@@ -622,7 +639,7 @@ func (m Model) viewMusicPlayer() string {
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorPrimary).
 			Padding(1, 3).
-			Background(colorBackground)
+			UnsetBackground()
 
 		modal := modalStyle.Render(helpContent)
 		view = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, modal)
