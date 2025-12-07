@@ -16,6 +16,26 @@
         ] (system: function nixpkgs.legacyPackages.${system});
     in
     {
+      packages = forAllSystems (pkgs: {
+        default = pkgs.buildGoModule {
+          pname = "jellyfin-mustui";
+          version = "0.1.0";
+          src = ./.;
+          
+          vendorHash = "sha256-2Pbg9EWFoq9O5yuDheUEiJSQK7UrKzNwSxXbzZUDeII=";
+
+          nativeBuildInputs = [ pkgs.pkg-config ];
+
+          buildInputs = [ pkgs.alsa-lib ];
+
+          meta = {
+            description = "A TUI music player for Jellyfin in Go";
+            homepage = "https://github.com/cedev-1/jellyfin-mustui";
+            mainProgram = "jellyfin-mustui";
+          };
+        };
+      });
+
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [
