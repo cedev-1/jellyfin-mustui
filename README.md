@@ -29,6 +29,53 @@ A terminal-based user interface (TUI) for Jellyfin, built with [Bubbletea](https
    go run ./cmd/jellyfin-mustui/main.go
    ```
 
+## NixOS Integration
+
+If you're using NixOS, you can integrate jellyfin-mustui into your system configuration using flakes.
+
+### Add the flake as an input
+
+Modify your system's `flake.nix`.
+
+```nix
+{
+  description = "My NixOS configuration";
+
+  inputs = {
+    nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    
+    # ADD THIS
+    jellyfin-mustui.url = "github:cedev-1/jellyfin-mustui";
+    # This line forces the app to use the same nixpkgs version as your system
+    # to avoid downloading duplicate dependencies:
+    jellyfin-mustui.inputs.nixpkgs.follows = "nixpkgs"; 
+  };
+
+  outputs = { self, nixpkgs, ... }@inputs: {
+    .
+    .
+    .
+  };
+}
+```
+
+And add the package to your `configuration.nix`:
+
+```nix
+{ config, pkgs, inputs, ... }: 
+# ^^^ Make sure 'inputs' is in the function arguments at the top
+
+{
+  # ... your existing configuration ...
+
+  environment.systemPackages = [
+
+    # Access the default package from the flake
+    inputs.jellyfin-mustui.packages.${pkgs.system}.default
+  ];
+}
+```
+
 ## Usage
 
 1. Run the application:
