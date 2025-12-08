@@ -14,6 +14,8 @@ A terminal-based user interface (TUI) for Jellyfin, built with [Bubbletea](https
    cd jellyfin-mustui
    ```
 
+   To get the direnv setup run `direnv allow` if you have [direnv](https://direnv.net/) installed.
+
 2. Install dependencies:
    ```bash
    go mod tidy
